@@ -29,9 +29,12 @@ type Bot struct {
 	MinProfitPerc      float64
 
 	AssetAmount float64
+
+	BoughtAmount *money.Money
 }
 
 func NewBot(b Bot) *Bot {
+	b.BoughtAmount = money.New(0, "USD")
 	return &b
 }
 
@@ -75,6 +78,7 @@ func (b Bot) Print() {
 	fmt.Printf("TotalBuyLimit: %s\n", b.TotalBuyLimit().Display())
 	fmt.Printf("DailySellLimit: %s\n", b.DailySellLimit().Display())
 	fmt.Printf("DailyBuyLimit: %s\n", b.DailyBuyLimit().Display())
+	fmt.Printf("BoughtAmount: %s\n", b.BoughtAmount.Display())
 	fmt.Println("")
 }
 
@@ -95,16 +99,25 @@ func (b *Bot) Process(q Quote) {
 	} else {
 		b.sell(q)
 	}
-	fmt.Printf(" Balances\n asset value: %s\n asset amount: %f\n", b.AssetValue(q.Price()).Display(), b.AssetAmount)
+	fmt.Printf(" Balances\n asset value: %s\n asset amount: %f\n bought amount: %s\n", b.AssetValue(q.Price()).Display(), b.AssetAmount, b.BoughtAmount.Display())
 }
 
 func (b *Bot) buy(q Quote) {
+	if less, _ := b.BoughtAmount.LessThan(b.TotalBuyLimit()); !less {
+		fmt.Printf(" refusing to buy as bought %s exceeds or equals buy limit %s", b.BoughtAmount.Display(), b.TotalBuyLimit().Display())
+		return
+	}
 	var v *money.Money
 	d, _ := b.TargetValue.Subtract(b.AssetValue(q.Price()))
 	if yes, _ := d.LessThanOrEqual(b.DailyBuyLimit()); yes {
 		v = d
 	} else {
 		v = b.DailyBuyLimit()
+	}
+
+	newAssetValue, _ := b.AssetValue(q.Price()).Add(v)
+	if less, _ := newAssetValue.LessThanOrEqual(b.TotalBuyLimit()); !less {
+		v, _ = b.TotalBuyLimit().Subtract(b.AssetValue(q.Price()))
 	}
 
 	amount := v.AsMajorUnits() / q.Price().AsMajorUnits()
@@ -114,6 +127,8 @@ func (b *Bot) buy(q Quote) {
 func (b *Bot) doBuy(amount float64, value *money.Money) {
 	fmt.Printf(" Buy %f (%s) of %s\n", amount, value.Display(), b.Symbol)
 	b.AssetAmount = b.AssetAmount + amount
+	t, _ := b.BoughtAmount.Add(value)
+	b.BoughtAmount = t
 }
 
 func (b *Bot) sell(q Quote) {
@@ -135,6 +150,8 @@ func (b *Bot) sell(q Quote) {
 func (b *Bot) doSell(amount float64, value *money.Money) {
 	fmt.Printf(" Sell %f (%s) of %s\n", amount, value.Display(), b.Symbol)
 	b.AssetAmount = b.AssetAmount - amount
+	t, _ := b.BoughtAmount.Subtract(value)
+	b.BoughtAmount = t
 }
 
 func main() {
