@@ -1,186 +1,151 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"strconv"
+	"time"
 
 	"github.com/Rhymond/go-money"
+	"github.com/gruis/dca/bot"
+	log "github.com/sirupsen/logrus"
 )
 
 type Quote struct {
-	Symbol string
-	Open   *money.Money
-	High   *money.Money
-	Low    *money.Money
-	Close  *money.Money
+	symbol    string
+	Open      *money.Money
+	High      *money.Money
+	Low       *money.Money
+	Close     *money.Money
+	OpenTime  time.Time
+	CloseTime time.Time
 }
 
+func (q Quote) Symbol() string {
+	return q.symbol
+}
+
+// Price is the average price during the time window
 func (q Quote) Price() *money.Money {
 	sum, _ := q.Open.Add(q.Close)
 	buckets, _ := sum.Allocate(50, 50)
 	return buckets[0]
 }
 
-type Bot struct {
-	Symbol             string
-	TargetValue        *money.Money
-	DailyBuyLimitPerc  float64
-	DailySellLimitPerc float64
-	TotalBuyLimitPerc  float64
-	MinProfitPerc      float64
-
-	AssetAmount float64
-
-	BoughtAmount *money.Money
+// Time is the mid-point during the quote time window
+func (q Quote) Time() time.Time {
+	return q.OpenTime.Add(q.CloseTime.Sub(q.OpenTime) / 2)
 }
 
-func NewBot(b Bot) *Bot {
-	b.BoughtAmount = money.New(0, "USD")
-	return &b
-}
+var BinanceDataFormatError = errors.New("Binance data is improperly formatted")
 
-func (b Bot) percOfTarget(v float64) *money.Money {
-	var p int
-	if v > 1 {
-		p = int(v)
-	} else {
-		p = int(v * 100)
+// [
+//   [
+//     1499040000000,      // Open time
+//     "0.01634790",       // Open
+//     "0.80000000",       // High
+//     "0.01575800",       // Low
+//     "0.01577100",       // Close
+//     "148976.11427815",  // Volume
+//     1499644799999,      // Close time
+//     "2434.19055334",    // Quote asset volume
+//     308,                // Number of trades
+//     "1756.87402397",    // Taker buy base asset volume
+//     "28.46694368",      // Taker buy quote asset volume
+//     "17928899.62484339" // Ignore.
+//   ]
+// ]
+
+func (q *Quote) FromBinance(data []interface{}) error {
+	if len(data) != 12 {
+		return BinanceDataFormatError
 	}
-	r := 100 - p
-	buckets, _ := b.TargetValue.Allocate(p, r)
-	return buckets[0]
+	q.Open, _ = q.MoneyFor(data[1].(string), "USD")
+	q.High, _ = q.MoneyFor(data[2].(string), "USD")
+	q.Low, _ = q.MoneyFor(data[3].(string), "USD")
+	q.Close, _ = q.MoneyFor(data[4].(string), "USD")
+	q.OpenTime = time.Unix(int64((data[0].(float64))/1000), 0)
+	q.CloseTime = time.Unix(int64((data[6].(float64))/1000), 0)
+
+	return nil
 }
 
-func (b Bot) MinProfit() *money.Money {
-	return b.percOfTarget(b.MinProfitPerc)
-}
-
-func (b Bot) MinSellValue() *money.Money {
-	v, _ := b.TargetValue.Add(b.MinProfit())
-	return v
-}
-
-func (b Bot) TotalBuyLimit() *money.Money {
-	return b.percOfTarget(b.TotalBuyLimitPerc)
-}
-
-func (b Bot) DailySellLimit() *money.Money {
-	return b.percOfTarget(b.DailySellLimitPerc)
-}
-
-func (b Bot) DailyBuyLimit() *money.Money {
-	return b.percOfTarget(b.DailyBuyLimitPerc)
-}
-
-func (b Bot) Print() {
-	fmt.Printf("TargetValue: %s\nMinProfitPerc: %f\n", b.TargetValue.Display(), b.MinProfitPerc)
-	fmt.Printf("MinProfit: %s\n", b.MinProfit().Display())
-	fmt.Printf("MinSellValue: %s\n", b.MinSellValue().Display())
-	fmt.Printf("TotalBuyLimit: %s\n", b.TotalBuyLimit().Display())
-	fmt.Printf("DailySellLimit: %s\n", b.DailySellLimit().Display())
-	fmt.Printf("DailyBuyLimit: %s\n", b.DailyBuyLimit().Display())
-	fmt.Printf("BoughtAmount: %s\n", b.BoughtAmount.Display())
-	fmt.Println("")
-}
-
-func (b Bot) AssetValue(price *money.Money) *money.Money {
-	v := price.AsMajorUnits() * b.AssetAmount
-	return money.New(int64(v*100), "USD")
-}
-
-func (b *Bot) Process(q Quote) {
-	fmt.Printf("Process %s %s; current value: %s\n", q.Price().Display(), q.Symbol, b.AssetValue(q.Price()).Display())
-	if yes, _ := b.AssetValue(q.Price()).Equals(b.TargetValue); yes {
-		fmt.Println("do nothing")
-		return
+func (q Quote) MoneyFor(s, currency string) (*money.Money, error) {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil, err
 	}
-	if yes, _ := b.AssetValue(q.Price()).LessThan(b.TargetValue); yes {
-		// TODO: if buy value is less than fees, skip
-		b.buy(q)
-	} else {
-		b.sell(q)
-	}
-	fmt.Printf(" Balances\n asset value: %s\n asset amount: %f\n bought amount: %s\n", b.AssetValue(q.Price()).Display(), b.AssetAmount, b.BoughtAmount.Display())
+	return money.New(int64(v*100), currency), nil
 }
 
-func (b *Bot) buy(q Quote) {
-	if less, _ := b.BoughtAmount.LessThan(b.TotalBuyLimit()); !less {
-		fmt.Printf(" refusing to buy as bought %s exceeds or equals buy limit %s", b.BoughtAmount.Display(), b.TotalBuyLimit().Display())
-		return
-	}
-	var v *money.Money
-	d, _ := b.TargetValue.Subtract(b.AssetValue(q.Price()))
-	if yes, _ := d.LessThanOrEqual(b.DailyBuyLimit()); yes {
-		v = d
-	} else {
-		v = b.DailyBuyLimit()
-	}
-
-	newAssetValue, _ := b.AssetValue(q.Price()).Add(v)
-	if less, _ := newAssetValue.LessThanOrEqual(b.TotalBuyLimit()); !less {
-		v, _ = b.TotalBuyLimit().Subtract(b.AssetValue(q.Price()))
-	}
-
-	amount := v.AsMajorUnits() / q.Price().AsMajorUnits()
-	b.doBuy(amount, v)
+func (q Quote) Print() {
+	fmt.Printf("%s - open: %s (@%s), close: %s (@%s)\n",
+		q.Symbol(), q.Open.Display(), q.OpenTime.UTC(), q.Close.Display(), q.CloseTime.UTC(),
+	)
 }
 
-func (b *Bot) doBuy(amount float64, value *money.Money) {
-	fmt.Printf(" Buy %f (%s) of %s\n", amount, value.Display(), b.Symbol)
-	b.AssetAmount = b.AssetAmount + amount
-	t, _ := b.BoughtAmount.Add(value)
-	b.BoughtAmount = t
-}
-
-func (b *Bot) sell(q Quote) {
-	// TODO: if sell value is less than fees, skip
-	// 			 if sell value is less than minimum profit, skip
-
-	var v *money.Money
-	d, _ := b.AssetValue(q.Price()).Subtract(b.TargetValue)
-	if yes, _ := d.LessThanOrEqual(b.DailySellLimit()); yes {
-		v = d
-	} else {
-		v = b.DailySellLimit()
+func getKlines(symbol string) [][]interface{} {
+	f, err := os.Open(fmt.Sprintf("%s.json", symbol))
+	if err != nil {
+		panic(err)
 	}
-
-	amount := v.AsMajorUnits() / q.Price().AsMajorUnits()
-	b.doSell(amount, v)
+	defer f.Close()
+	bytes, _ := ioutil.ReadAll(f)
+	prices := [][]interface{}{}
+	json.Unmarshal(bytes, &prices)
+	return prices
 }
 
-func (b *Bot) doSell(amount float64, value *money.Money) {
-	fmt.Printf(" Sell %f (%s) of %s\n", amount, value.Display(), b.Symbol)
-	b.AssetAmount = b.AssetAmount - amount
-	t, _ := b.BoughtAmount.Subtract(value)
-	b.BoughtAmount = t
+func getHistory(symbol string) ([]Quote, error) {
+	quotes := []Quote{}
+	klines := getKlines(symbol)
+	for _, p := range klines {
+		q := Quote{symbol: symbol}
+		if err := q.FromBinance(p); err != nil {
+			return quotes, err
+		}
+		quotes = append(quotes, q)
+	}
+	return quotes, nil
 }
 
 func main() {
-	var bot *Bot
+	log.SetLevel(log.InfoLevel)
+	//log.SetLevel(log.DebugLevel)
+	var b *bot.Strategy
+	targetValue := 1_000
+	minTransactionSpan := time.Hour * 24 * 4
 
-	bot = NewBot(Bot{
-		TargetValue:        money.New(50028, "USD"),
+	b = bot.New(bot.Strategy{
+		Currency:           "USD",
+		TargetValue:        money.New(int64(targetValue*100), "USD"),
 		MinProfitPerc:      200,
 		TotalBuyLimitPerc:  200,
 		DailyBuyLimitPerc:  0.10,
 		DailySellLimitPerc: 0.10,
 		Symbol:             "SOL",
+		MinTransactionSpan: minTransactionSpan,
 	})
-	bot.Print()
+	//b.Print()
 
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(4270, "USD"), Close: money.New(4104, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(4340, "USD"), Close: money.New(4266, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(4690, "USD"), Close: money.New(4510, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(4666, "USD"), Close: money.New(5591, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(5609, "USD"), Close: money.New(3511, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(3504, "USD"), Close: money.New(4474, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(4445, "USD"), Close: money.New(3881, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(3899, "USD"), Close: money.New(3512, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(3123, "USD"), Close: money.New(2469, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(2450, "USD"), Close: money.New(3128, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(3140, "USD"), Close: money.New(3000, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(3004, "USD"), Close: money.New(3554, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(3548, "USD"), Close: money.New(3358, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(3368, "USD"), Close: money.New(2904, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(2900, "USD"), Close: money.New(2738, "USD")})
-	bot.Process(Quote{Symbol: "SOLUSDT", Open: money.New(2741, "USD"), Close: money.New(2860, "USD")})
+	history, err := getHistory("SOLUSDT")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(
+		"date, price, " +
+			"transaction amount, transaction value, " +
+			"asset amount, asset value, " +
+			"cash, total value, " +
+			"ROI, ROI %, " +
+			"num bought, amount bought, value bought, " +
+			"num sold, amount sold, value sold",
+	)
+	for _, quote := range history {
+		//quote.Print()
+		b.Process(quote)
+	}
 }
