@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Rhymond/go-money"
-	"github.com/gruis/dca/bot"
+	"github.com/gruis/dca/strategy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -115,19 +115,19 @@ func getHistory(symbol string) ([]Quote, error) {
 func main() {
 	log.SetLevel(log.InfoLevel)
 	//log.SetLevel(log.DebugLevel)
-	var b *bot.Strategy
+	var b *strategy.DCA
 	targetValue := 1_000
 	minTransactionSpan := time.Hour * 24 * 4
 
-	b = bot.New(bot.Strategy{
-		Currency:           "USD",
-		TargetValue:        money.New(int64(targetValue*100), "USD"),
-		MinProfitPerc:      200,
-		TotalBuyLimitPerc:  200,
-		DailyBuyLimitPerc:  0.10,
-		DailySellLimitPerc: 0.10,
-		Symbol:             "SOL",
-		MinTransactionSpan: minTransactionSpan,
+	b = strategy.NewDCA(strategy.DCA{
+		Currency:            "USD",
+		TargetValue:         money.New(int64(targetValue*100), "USD"),
+		MinProfitPerc:       200,
+		TotalBuyLimitPerc:   200,
+		SingleBuyLimitPerc:  0.10,
+		SingleSellLimitPerc: 0.10,
+		Symbol:              "SOL",
+		MinTransactionSpan:  minTransactionSpan,
 	})
 	//b.Print()
 
@@ -165,4 +165,6 @@ func main() {
 			)
 		}
 	}
+
+	b.Print()
 }
