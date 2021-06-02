@@ -141,11 +141,28 @@ func main() {
 			"asset amount, asset value, " +
 			"cash, total value, " +
 			"ROI, ROI %, " +
-			"num bought, amount bought, value bought, " +
-			"num sold, amount sold, value sold",
+			"num buys, amount bought, value bought, " +
+			"num sells, amount sold, value sold",
 	)
 	for _, quote := range history {
 		//quote.Print()
-		b.Process(quote)
+		action, err := b.Process(quote)
+		if err != nil {
+			panic(err)
+		}
+		if action != nil {
+			transactionAmount := action.Amount
+			transactionValue := action.Value.AsMajorUnits()
+
+			fmt.Printf("%s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %d, %f, %f, %d, %f, %f\n",
+				quote.Time().UTC(), quote.Price().AsMajorUnits(),
+				transactionAmount, transactionValue,
+				b.AssetAmount, b.AssetValue(quote.Price()).AsMajorUnits(),
+				b.Cash.AsMajorUnits(), b.TotalValue(quote.Price()).AsMajorUnits(),
+				b.Roi(quote.Price()).AsMajorUnits(), b.RoiPerc(quote.Price()),
+				b.BuyCnt, b.BuyAmount, b.BuyValue.AsMajorUnits(),
+				b.SellCnt, b.SellAmount, b.SellValue.AsMajorUnits(),
+			)
+		}
 	}
 }

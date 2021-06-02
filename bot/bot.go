@@ -15,6 +15,7 @@ var UnknownProcessingError = errors.New("an unknown error occured during process
 type Transaction struct {
 	Amount float64
 	Value  *money.Money
+	Fee    *money.Money
 	Time   time.Time
 }
 
@@ -25,14 +26,14 @@ type Quote interface {
 }
 
 type Strategy struct {
-	Symbol             string
-	Currency           string
-	TargetValue        *money.Money
-	DailyBuyLimitPerc  float64
-	DailySellLimitPerc float64
-	TotalBuyLimitPerc  float64
-	MinProfitPerc      float64
-	MinTransactionSpan time.Duration
+	Symbol              string
+	Currency            string
+	TargetValue         *money.Money
+	SingleBuyLimitPerc  float64
+	SingleSellLimitPerc float64
+	TotalBuyLimitPerc   float64
+	MinProfitPerc       float64
+	MinTransactionSpan  time.Duration
 
 	// move these to a ledger
 
@@ -111,12 +112,12 @@ func (b Strategy) Budget() *money.Money {
 	return b.TotalBuyLimit()
 }
 
-func (b Strategy) DailySellLimit() *money.Money {
-	return b.percOfTarget(b.DailySellLimitPerc)
+func (b Strategy) SingleSellLimit() *money.Money {
+	return b.percOfTarget(b.SingleSellLimitPerc)
 }
 
-func (b Strategy) DailyBuyLimit() *money.Money {
-	return b.percOfTarget(b.DailyBuyLimitPerc)
+func (b Strategy) SingleBuyLimit() *money.Money {
+	return b.percOfTarget(b.SingleBuyLimitPerc)
 }
 
 func (b Strategy) Print() {
@@ -124,8 +125,8 @@ func (b Strategy) Print() {
 	fmt.Printf("MinProfit: %s\n", b.MinProfit().Display())
 	fmt.Printf("MinSellValue: %s\n", b.MinSellValue().Display())
 	fmt.Printf("TotalBuyLimit: %s\n", b.TotalBuyLimit().Display())
-	fmt.Printf("DailySellLimit: %s\n", b.DailySellLimit().Display())
-	fmt.Printf("DailyBuyLimit: %s\n", b.DailyBuyLimit().Display())
+	fmt.Printf("SingleSellLimit: %s\n", b.SingleSellLimit().Display())
+	fmt.Printf("SingleBuyLimit: %s\n", b.SingleBuyLimit().Display())
 	fmt.Printf("BoughtAmount: %s\n", b.BoughtAmount.Display())
 	fmt.Println("")
 }
@@ -164,7 +165,7 @@ func (b Strategy) RoiPerc(price *money.Money) float64 {
 	return (b.Roi(price).AsMajorUnits() / b.Budget().AsMajorUnits())
 }
 
-func (b *Strategy) Process(q Quote) error {
+func (b *Strategy) Process(q Quote) (*Transaction, error) {
 	logger := log.WithFields(log.Fields{
 		"price":                 q.Price().Display(),
 		"symbol":                q.Symbol(),
@@ -179,18 +180,16 @@ func (b *Strategy) Process(q Quote) error {
 			"transaction span": transactionSpan,
 			"min span":         b.MinTransactionSpan,
 		}).Debug("do nothing - minimum transaction span not reached")
-		return nil
+		return nil, nil
 	}
 	if yes, _ := b.AssetValue(q.Price()).Equals(b.TargetValue); yes {
 		logger.Debug("do nothing - asset value equals target value")
-		return nil
+		return nil, nil
 	}
 
 	var (
-		action            *Transaction
-		err               error
-		transactionAmount float64
-		transactionValue  float64
+		action *Transaction
+		err    error
 	)
 
 	if yes, _ := b.AssetValue(q.Price()).LessThan(b.TargetValue); yes {
@@ -199,44 +198,19 @@ func (b *Strategy) Process(q Quote) error {
 	} else {
 		action, err = b.sell(q)
 	}
-	if err != nil {
-		return err
-	}
 
 	if action != nil {
-		b.RecordTransaction(action)
-		b.LastActedQuote = &q
-		logger = logger.WithFields(log.Fields{
-			"time":               action.Time,
-			"transaction amount": action.Amount,
-			"transaction value":  action.Value.Display(),
-		})
-		transactionAmount = action.Amount
-		transactionValue = action.Value.AsMajorUnits()
+		b.RecordTransaction(action, &q)
 	}
 
-	logger.WithFields(log.Fields{
-		"new value":    b.AssetValue(q.Price()).Display(),
-		"new amount":   b.AssetAmount,
-		"total bought": b.BoughtAmount.Display(),
-	}).Debug("processed")
-
-	fmt.Printf("%s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %d, %f, %f, %d, %f, %f\n",
-		q.Time().UTC(), q.Price().AsMajorUnits(),
-		transactionAmount, transactionValue,
-		b.AssetAmount, b.AssetValue(q.Price()).AsMajorUnits(),
-		b.Cash.AsMajorUnits(), b.TotalValue(q.Price()).AsMajorUnits(),
-		b.Roi(q.Price()).AsMajorUnits(), b.RoiPerc(q.Price()),
-		b.BuyCnt, b.BuyAmount, b.BuyValue.AsMajorUnits(),
-		b.SellCnt, b.SellAmount, b.SellValue.AsMajorUnits(),
-	)
-	return nil
+	return action, err
 }
 
-func (b *Strategy) RecordTransaction(action *Transaction) error {
+func (b *Strategy) RecordTransaction(action *Transaction, q *Quote) error {
 	if action == nil {
 		return nil
 	}
+	b.LastActedQuote = q
 
 	b.AssetAmount = b.AssetAmount + action.Amount
 
@@ -292,10 +266,10 @@ func (b *Strategy) buy(q Quote) (*Transaction, error) {
 	}
 	var v *money.Money
 	d, _ := b.TargetValue.Subtract(b.AssetValue(q.Price()))
-	if yes, _ := d.LessThanOrEqual(b.DailyBuyLimit()); yes {
+	if yes, _ := d.LessThanOrEqual(b.SingleBuyLimit()); yes {
 		v = d
 	} else {
-		v = b.DailyBuyLimit()
+		v = b.SingleBuyLimit()
 	}
 
 	newAssetValue, err := b.AssetValue(q.Price()).Add(v)
@@ -316,16 +290,13 @@ func (b *Strategy) buy(q Quote) (*Transaction, error) {
 
 func (b *Strategy) doBuy(amount float64, value *money.Money) (*Transaction, error) {
 	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": b.Symbol}).Debug("execute buy")
-	return &Transaction{Amount: amount, Value: value, Time: time.Now()}, nil
-	//b.AssetAmount = b.AssetAmount + amount
-	//t, _ := b.BoughtAmount.Add(value)
-	//b.BoughtAmount = t
+	// TODO: factor in transaction fee of 0.1%; reduce value and amount accordingly
+	fee := money.New(0, value.Currency().Code)
+	return &Transaction{Amount: amount, Value: value, Time: time.Now(), Fee: fee}, nil
 }
 
 func (b *Strategy) sell(q Quote) (*Transaction, error) {
 	// TODO: if sell value is less than fees, skip
-	// 			 if sell value is less than minimum profit, skip
-
 	var v *money.Money
 	d, err := b.AssetValue(q.Price()).Subtract(b.TargetValue)
 	if err != nil {
@@ -335,10 +306,10 @@ func (b *Strategy) sell(q Quote) (*Transaction, error) {
 		return nil, nil
 	}
 	// TODO: propogate errors
-	if yes, _ := d.LessThanOrEqual(b.DailySellLimit()); yes {
+	if yes, _ := d.LessThanOrEqual(b.SingleSellLimit()); yes {
 		v = d
 	} else {
-		v = b.DailySellLimit()
+		v = b.SingleSellLimit()
 	}
 
 	amount := v.AsMajorUnits() / q.Price().AsMajorUnits()
@@ -347,10 +318,9 @@ func (b *Strategy) sell(q Quote) (*Transaction, error) {
 
 func (b *Strategy) doSell(amount float64, value *money.Money) (*Transaction, error) {
 	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": b.Symbol}).Debug("execute sell")
-	negative, err := money.New(0, b.Currency).Subtract(value)
-	return &Transaction{Amount: 0 - amount, Value: negative, Time: time.Now()}, err
+	// TODO: factor in transaction fee of 0.1%; reduce value and amount accordingly
+	fee := money.New(0, value.Currency().Code)
 
-	//b.AssetAmount = b.AssetAmount - amount
-	//t, _ := b.BoughtAmount.Subtract(value)
-	//b.BoughtAmount = t
+	negative, err := money.New(0, b.Currency).Subtract(value)
+	return &Transaction{Amount: 0 - amount, Value: negative, Time: time.Now(), Fee: fee}, err
 }
