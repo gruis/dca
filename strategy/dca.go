@@ -70,6 +70,45 @@ func NewDCA(bot DCA) *DCA {
 	return &bot
 }
 
+type Streamer interface {
+	Stream(func(Quote) error) error
+}
+
+func (bot *DCA) Watch(s Streamer) error {
+	fmt.Println(
+		"date, price, " +
+			"transaction amount, transaction value, " +
+			"asset amount, asset value, " +
+			"cash, total value, " +
+			"ROI, ROI %, " +
+			"num buys, amount bought, value bought, " +
+			"num sells, amount sold, value sold",
+	)
+
+	return s.Stream(func(quote Quote) error {
+		//quote.Print()
+		action, err := bot.Process(quote)
+		if err != nil {
+			return err
+		}
+		if action != nil {
+			transactionAmount := action.Amount
+			transactionValue := action.Value.AsMajorUnits()
+
+			fmt.Printf("%s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %d, %f, %f, %d, %f, %f\n",
+				quote.Time().UTC(), quote.Price().AsMajorUnits(),
+				transactionAmount, transactionValue,
+				bot.AssetAmount, bot.AssetValue(quote.Price()).AsMajorUnits(),
+				bot.Cash.AsMajorUnits(), bot.TotalValue(quote.Price()).AsMajorUnits(),
+				bot.Roi(quote.Price()).AsMajorUnits(), bot.RoiPerc(quote.Price()),
+				bot.BuyCnt, bot.BuyAmount, bot.BuyValue.AsMajorUnits(),
+				bot.SellCnt, bot.SellAmount, bot.SellValue.AsMajorUnits(),
+			)
+		}
+		return nil
+	})
+}
+
 func (bot DCA) percOfTarget(v float64) *money.Money {
 	var p int
 	if v > 1 {
@@ -172,6 +211,7 @@ func (bot DCA) RoiPerc(price *money.Money) float64 {
 	return (bot.Roi(price).AsMajorUnits() / bot.Budget().AsMajorUnits())
 }
 
+// Process along with buy and sell constitute the DCA algorithm
 func (bot *DCA) Process(q Quote) (*Transaction, error) {
 	logger := log.WithFields(log.Fields{
 		"price":                 q.Price().Display(),
@@ -212,55 +252,6 @@ func (bot *DCA) Process(q Quote) (*Transaction, error) {
 	}
 
 	return action, err
-}
-
-func (bot *DCA) RecordTransaction(action *Transaction, q *Quote) error {
-	if action == nil {
-		return nil
-	}
-	bot.LastActedQuote = q
-
-	bot.AssetAmount = bot.AssetAmount + action.Amount
-
-	if err := bot.AddValue(&bot.BoughtAmount, action.Value); err != nil {
-		return err
-	}
-
-	if err := bot.SubtractValue(&bot.Cash, action.Value); err != nil {
-		return err
-	}
-
-	if action.Value.IsNegative() {
-		bot.SellCnt++
-		bot.SellAmount = bot.SellAmount - action.Amount
-		bot.SubtractValue(&bot.SellValue, action.Value)
-	} else {
-		bot.BuyCnt++
-		bot.BuyAmount = bot.BuyAmount + action.Amount
-		bot.AddValue(&bot.BuyValue, action.Value)
-	}
-
-	bot.LastTransaction = action
-
-	return nil
-}
-
-func (bot DCA) AddValue(item **money.Money, value *money.Money) error {
-	c, err := (*item).Add(value)
-	if err != nil {
-		return err
-	}
-	*item = c
-	return nil
-}
-
-func (bot DCA) SubtractValue(item **money.Money, value *money.Money) error {
-	c, err := (*item).Subtract(value)
-	if err != nil {
-		return err
-	}
-	*item = c
-	return nil
 }
 
 func (bot *DCA) buy(q Quote) (*Transaction, error) {
@@ -331,4 +322,53 @@ func (bot *DCA) doSell(amount float64, value *money.Money) (*Transaction, error)
 
 	negative, err := money.New(0, bot.Currency).Subtract(value)
 	return &Transaction{Amount: 0 - amount, Value: negative, Time: time.Now(), Fee: fee}, err
+}
+
+func (bot *DCA) RecordTransaction(action *Transaction, q *Quote) error {
+	if action == nil {
+		return nil
+	}
+	bot.LastActedQuote = q
+
+	bot.AssetAmount = bot.AssetAmount + action.Amount
+
+	if err := bot.AddValue(&bot.BoughtAmount, action.Value); err != nil {
+		return err
+	}
+
+	if err := bot.SubtractValue(&bot.Cash, action.Value); err != nil {
+		return err
+	}
+
+	if action.Value.IsNegative() {
+		bot.SellCnt++
+		bot.SellAmount = bot.SellAmount - action.Amount
+		bot.SubtractValue(&bot.SellValue, action.Value)
+	} else {
+		bot.BuyCnt++
+		bot.BuyAmount = bot.BuyAmount + action.Amount
+		bot.AddValue(&bot.BuyValue, action.Value)
+	}
+
+	bot.LastTransaction = action
+
+	return nil
+}
+
+func (bot DCA) AddValue(item **money.Money, value *money.Money) error {
+	c, err := (*item).Add(value)
+	if err != nil {
+		return err
+	}
+	*item = c
+	return nil
+}
+
+func (bot DCA) SubtractValue(item **money.Money, value *money.Money) error {
+	c, err := (*item).Subtract(value)
+	if err != nil {
+		return err
+	}
+	*item = c
+	return nil
 }
