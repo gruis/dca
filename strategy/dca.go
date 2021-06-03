@@ -34,6 +34,8 @@ type DCA struct {
 	LastTransaction *Transaction
 	LastActedQuote  *Quote
 
+	TotalFees *money.Money
+
 	BuyCnt  int
 	SellCnt int
 
@@ -53,6 +55,10 @@ func NewDCA(bot DCA) *DCA {
 
 	if bot.BoughtAmount == nil {
 		bot.BoughtAmount = money.New(0, bot.Currency)
+	}
+
+	if bot.TotalFees == nil {
+		bot.TotalFees = money.New(0, bot.Currency)
 	}
 
 	if bot.Cash == nil {
@@ -77,7 +83,7 @@ type Streamer interface {
 func (bot *DCA) Watch(s Streamer) error {
 	fmt.Println(
 		"date, price, " +
-			"transaction amount, transaction value, " +
+			"transaction amount, transaction value, transaction fee, " +
 			"asset amount, asset value, " +
 			"cash, total value, " +
 			"ROI, ROI %, " +
@@ -92,12 +98,10 @@ func (bot *DCA) Watch(s Streamer) error {
 			return err
 		}
 		if action != nil {
-			transactionAmount := action.Amount
-			transactionValue := action.Value.AsMajorUnits()
 
-			fmt.Printf("%s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %d, %f, %f, %d, %f, %f\n",
+			fmt.Printf("%s, %f, %.2f, %f, %f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %d, %.2f, %.2f, %d, %.2f, %.2f\n",
 				quote.Time().UTC(), quote.Price().AsMajorUnits(),
-				transactionAmount, transactionValue,
+				action.Amount, action.Value.AsMajorUnits(), action.Fee.AsMajorUnits(),
 				bot.AssetAmount, bot.AssetValue(quote.Price()).AsMajorUnits(),
 				bot.Cash.AsMajorUnits(), bot.TotalValue(quote.Price()).AsMajorUnits(),
 				bot.Roi(quote.Price()).AsMajorUnits(), bot.RoiPerc(quote.Price()),
@@ -174,6 +178,8 @@ func (bot DCA) Print() {
 	fmt.Printf("Sell Cnt: %d\n", bot.SellCnt)
 	fmt.Printf("Sell Amount: %.2f\n", bot.SellAmount)
 	fmt.Printf("Sell Value: %s\n", bot.SellValue.Display())
+
+	fmt.Printf("Fees paid: %s\n", bot.TotalFees.Display())
 	fmt.Println("")
 }
 
@@ -289,8 +295,12 @@ func (bot *DCA) buy(q Quote) (*Transaction, error) {
 
 func (bot *DCA) doBuy(amount float64, value *money.Money) (*Transaction, error) {
 	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": bot.Symbol}).Debug("execute buy")
-	// TODO: factor in transaction fee of 0.1%; reduce value and amount accordingly
-	fee := money.New(0, value.Currency().Code)
+	// TODO align this with BNB deduction maker/taker 0.075%/0.075%
+	buckets, _ := value.Allocate(999, 1)
+	fee := buckets[1]
+	value = buckets[0]
+	amount = amount * 0.999
+
 	return &Transaction{Amount: amount, Value: value, Time: time.Now(), Fee: fee}, nil
 }
 
@@ -317,8 +327,9 @@ func (b *DCA) sell(q Quote) (*Transaction, error) {
 
 func (bot *DCA) doSell(amount float64, value *money.Money) (*Transaction, error) {
 	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": bot.Symbol}).Debug("execute sell")
-	// TODO: factor in transaction fee of 0.1%; reduce value and amount accordingly
-	fee := money.New(0, value.Currency().Code)
+	buckets, _ := value.Allocate(999, 1)
+	fee := buckets[1]
+	value = buckets[0]
 
 	negative, err := money.New(0, bot.Currency).Subtract(value)
 	return &Transaction{Amount: 0 - amount, Value: negative, Time: time.Now(), Fee: fee}, err
@@ -332,11 +343,17 @@ func (bot *DCA) RecordTransaction(action *Transaction, q *Quote) error {
 
 	bot.AssetAmount = bot.AssetAmount + action.Amount
 
+	// TODO: take the fee into account
 	if err := bot.AddValue(&bot.BoughtAmount, action.Value); err != nil {
 		return err
 	}
 
+	// TODO: take the fee into account
 	if err := bot.SubtractValue(&bot.Cash, action.Value); err != nil {
+		return err
+	}
+
+	if err := bot.AddValue(&bot.TotalFees, action.Fee); err != nil {
 		return err
 	}
 
