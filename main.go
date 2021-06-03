@@ -87,8 +87,14 @@ func (q Quote) Print() {
 	)
 }
 
-func getKlines(symbol string) [][]interface{} {
-	f, err := os.Open(fmt.Sprintf("%s.json", symbol))
+type Runner struct {
+	Symbol string
+}
+
+type RunnerStreamHandler func(Quote) error
+
+func (r Runner) getKlines() [][]interface{} {
+	f, err := os.Open(fmt.Sprintf("%s.json", r.Symbol))
 	if err != nil {
 		panic(err)
 	}
@@ -99,17 +105,42 @@ func getKlines(symbol string) [][]interface{} {
 	return prices
 }
 
-func getHistory(symbol string) ([]Quote, error) {
-	quotes := []Quote{}
-	klines := getKlines(symbol)
-	for _, p := range klines {
-		q := Quote{symbol: symbol}
-		if err := q.FromBinance(p); err != nil {
-			return quotes, err
+func (r Runner) streamKlines(handler func([]interface{}) error) error {
+	var err error
+	// we are faking a stream here so that upstream code will be forced to deal
+	// with streaming apis that they should ultimately integrate with
+	// TODO: use a JSON stream parser instead of getKlines
+	//       https://golang.org/pkg/encoding/json/#example_Decoder_Decode_stream
+	for _, k := range r.getKlines() {
+		if err = handler(k); err != nil {
+			continue
 		}
-		quotes = append(quotes, q)
 	}
-	return quotes, nil
+	return err
+}
+
+func (r Runner) getHistory() ([]Quote, error) {
+	quotes := []Quote{}
+	err := r.Stream(func(q Quote) error {
+		quotes = append(quotes, q)
+		return nil
+	})
+	return quotes, err
+}
+
+func (r Runner) Stream(handler RunnerStreamHandler) error {
+	var err error
+	r.streamKlines(func(k []interface{}) error {
+		q := Quote{symbol: r.Symbol}
+		if err = q.FromBinance(k); err != nil {
+			return err
+		}
+		if err = handler(q); err != nil {
+			return err
+		}
+		return nil
+	})
+	return err
 }
 
 func main() {
@@ -131,10 +162,6 @@ func main() {
 	})
 	//b.Print()
 
-	history, err := getHistory("SOLUSDT")
-	if err != nil {
-		panic(err)
-	}
 	fmt.Println(
 		"date, price, " +
 			"transaction amount, transaction value, " +
@@ -144,11 +171,12 @@ func main() {
 			"num buys, amount bought, value bought, " +
 			"num sells, amount sold, value sold",
 	)
-	for _, quote := range history {
+	r := Runner{Symbol: "SOLUSDT"}
+	err := r.Stream(func(quote Quote) error {
 		//quote.Print()
 		action, err := b.Process(quote)
 		if err != nil {
-			panic(err)
+			return err
 		}
 		if action != nil {
 			transactionAmount := action.Amount
@@ -164,7 +192,11 @@ func main() {
 				b.SellCnt, b.SellAmount, b.SellValue.AsMajorUnits(),
 			)
 		}
-	}
-
+		return nil
+	})
 	b.Print()
+
+	if err != nil {
+		panic(err)
+	}
 }
