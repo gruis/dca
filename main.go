@@ -10,6 +10,9 @@ import (
 )
 
 func main() {
+	money.AddCurrency("BTC", "\u20bf", "$1", ".", ",", 8)
+	money.AddCurrency("USDT", "₮", "$1", ".", ",", 6)
+
 	log.SetLevel(log.InfoLevel)
 	//log.SetLevel(log.DebugLevel)
 	var b *strategy.DCA
