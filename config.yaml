@@ -1,0 +1,67 @@
+---
+# This file has no effect; TODO: parse and use to run the bots
+
+bots:
+- src: USDT
+  dst: SOL
+  target-value: 1_000
+  span: 4
+  min-profit: 200
+  total-buy-limit: 200
+  single-buy-limit: 0.10
+  single-sell-limit: 0.10
+
+- src: BTC
+  dst: RVN
+  target-value: 0.1
+  min-profit: 200
+  total-buy-limit: 200
+  single-buy-limit: 0.01
+  single-sell-limit: 0.10
+  span: 2
+
+- name: BTCRVN_4days
+  src: BTC
+  dst: RVN
+  target-value: 0.1
+  min-profit: 200
+  total-buy-limit: 200
+  single-buy-limit: 0.01
+  single-sell-limit: 0.01
+  span: 4
+  span-unit: days
+
+currencies:
+- code: BTC
+  symbol: "\u20bf"
+  precision: 8
+- code: ETH
+  symbol: "\u039e"
+  precision: 18
+- code: USDT
+  symbol: "\u20Ae"
+  precision: 6
+- code: ADA
+  symbol: "\u20B3"
+  precision: 6
+- code: DOT
+  symbol: "DOT"
+  precision: 8
+- code: SOL
+  symbol: "SOL"
+  precision: 8
+- code: AVAX
+  symbol: "AVAX"
+  precision: 9
+- code: MATIC
+  symbol: "MATIC"
+  precision: 8
+- code: BTT
+  symbol: "BTT"
+  precision: 8
+- code: RVN
+  symbol: "RVN"
+  precision: 8
+- code: GO
+  symbol: "GO"
+  precision: 8

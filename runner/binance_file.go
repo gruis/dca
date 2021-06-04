@@ -5,18 +5,20 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/Rhymond/go-money"
 	"github.com/gruis/dca/prices"
 	"github.com/gruis/dca/strategy"
 )
 
 // BinanceFile is responsible for simulating quote streams
 type BinanceFile struct {
-	Symbol string
+	Src *money.Currency
+	Dst *money.Currency
 }
 
 func (r BinanceFile) streamKlines(handler func([]interface{}) error) error {
 	var err error
-	f, err := os.Open(fmt.Sprintf("%s.json", r.Symbol))
+	f, err := os.Open(fmt.Sprintf("%s%s.json", r.Src.Code, r.Dst.Code))
 	if err != nil {
 		return err
 	}
@@ -63,7 +65,7 @@ func (r BinanceFile) streamKlines(handler func([]interface{}) error) error {
 func (r BinanceFile) Stream(handler func(strategy.Quote) error) error {
 	var err error
 	err = r.streamKlines(func(k []interface{}) error {
-		q := prices.NewKline(r.Symbol)
+		q := prices.NewKline(r.Src, r.Dst)
 		if err = q.FromBinance(k); err != nil {
 			return err
 		}
