@@ -1,11 +1,14 @@
 package ledger
 
 import (
+	"errors"
 	"sort"
 	"time"
 
 	"github.com/Rhymond/go-money"
 )
+
+var NegativeBalanceTransaction = errors.New("transaction would result in a negative balance")
 
 type Transaction struct {
 	ID          string
@@ -25,11 +28,12 @@ func (ts Transactions) Less(i, j int) bool { return ts[i].CreatedAt.Before(ts[j]
 
 // TODO: provide, max, min, avg balance, etc.
 type Account struct {
-	Name         string
-	Currency     *money.Currency
-	Balance      *money.Money
-	LastUpdateAt time.Time
-	Transactions []*Transaction
+	Name          string
+	Currency      *money.Currency
+	Balance       *money.Money
+	LastUpdateAt  time.Time
+	Transactions  []*Transaction
+	AllowNegative bool
 }
 
 func NewAccount(a Account) *Account {
@@ -44,7 +48,11 @@ func NewAccount(a Account) *Account {
 }
 
 func (a *Account) Subtract(amount *money.Money) (err error) {
-	a.Balance, err = a.Balance.Subtract(amount)
+	b, err := a.Balance.Subtract(amount)
+	if b.IsNegative() && !a.AllowNegative {
+		return NegativeBalanceTransaction
+	}
+	a.Balance = b
 	return err
 }
 
@@ -77,10 +85,15 @@ func NewDoubleBook(accounts ...*Account) (db *DoubleBook) {
 
 func (db *DoubleBook) RecordTransaction(t Transaction) error {
 	if err := db.Accounts[t.FromAccount.Name].Subtract(t.FromAmount); err != nil {
-		// TODO: rollback
-		return err
+		if !errors.Is(err, NegativeBalanceTransaction) {
+			// TODO: rollback
+			return err
+		}
+		// no rollback necessary, reduction was not recorded
 	}
+
 	if err := db.Accounts[t.ToAccount.Name].Add(t.FromAmount); err != nil {
+		// TODO: check for negative balance transaction, i.e., FromAmount was a negative number
 		// TODO: rollback
 		return err
 	}

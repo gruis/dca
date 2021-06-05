@@ -1,5 +1,15 @@
 ---
-# This file has no effect; TODO: parse and use to run the bots
+
+ledger: 
+  accounts:
+  - currency: USDT
+    balance: 2_000
+  - currency: BTC
+    balance: 0.2
+  - currency: SOL
+    balance: 0
+  - name: Fees
+    balance: 0
 
 bots:
 - src: USDT
@@ -10,6 +20,14 @@ bots:
   total-buy-limit: 200
   single-buy-limit: 0.10
   single-sell-limit: 0.10
+  ledger: 
+    accounts:
+    - currency: USDT
+      balance: 2_000
+    - currency: SOL
+      balance: 0
+    - name: Fees
+      balance: 0
 
 - src: BTC
   dst: RVN
@@ -19,6 +37,14 @@ bots:
   single-buy-limit: 0.01
   single-sell-limit: 0.10
   span: 2
+  ledger: 
+    accounts:
+    - currency: BTC
+      balance: 0.2
+    - currency: RVN
+      balance: 0
+    - name: Fees
+      balance: 0
 
 - name: BTCRVN_4days
   src: BTC
@@ -30,6 +56,14 @@ bots:
   single-sell-limit: 0.01
   span: 4
   span-unit: days
+  ledger: 
+    accounts:
+    - currency: BTC
+      balance: 0.2
+    - currency: RVN
+      balance: 0
+    - name: Fees
+      balance: 0
 
 currencies:
 - code: BTC
