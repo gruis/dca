@@ -3,6 +3,7 @@ package strategy
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/Rhymond/go-money"
@@ -13,8 +14,8 @@ var InsufficientBudget = errors.New("budget is insufficient to purchace asset at
 var UnknownProcessingError = errors.New("an unknown error occured during processing")
 
 type DCA struct {
-	Symbol              string
-	Currency            string
+	Target              *money.Currency
+	Currency            *money.Currency
 	TargetValue         *money.Money
 	SingleBuyLimitPerc  float64
 	SingleSellLimitPerc float64
@@ -23,6 +24,8 @@ type DCA struct {
 	MinTransactionSpan  time.Duration
 
 	// move these to a ledger
+
+	PrintTransactions bool
 
 	// AssetAmount is the number of assets in the ledger
 	AssetAmount float64
@@ -46,19 +49,23 @@ type DCA struct {
 	SellAmount float64
 }
 
+type Ledger struct {
+	Transactions []*Transaction
+}
+
 func NewDCA(bot DCA) *DCA {
 	currency := bot.Currency
-	if currency == "" {
-		currency = "USD"
+	if currency == nil {
+		currency = money.GetCurrency("USD")
 		bot.Currency = currency
 	}
 
 	if bot.BoughtAmount == nil {
-		bot.BoughtAmount = money.New(0, bot.Currency)
+		bot.BoughtAmount = money.New(0, bot.Currency.Code)
 	}
 
 	if bot.TotalFees == nil {
-		bot.TotalFees = money.New(0, bot.Currency)
+		bot.TotalFees = money.New(0, bot.Currency.Code)
 	}
 
 	if bot.Cash == nil {
@@ -66,11 +73,11 @@ func NewDCA(bot DCA) *DCA {
 	}
 
 	if bot.BuyValue == nil {
-		bot.BuyValue = money.New(0, bot.Currency)
+		bot.BuyValue = money.New(0, bot.Currency.Code)
 	}
 
 	if bot.SellValue == nil {
-		bot.SellValue = money.New(0, bot.Currency)
+		bot.SellValue = money.New(0, bot.Currency.Code)
 	}
 
 	return &bot
@@ -81,24 +88,27 @@ type Streamer interface {
 }
 
 func (bot *DCA) Watch(s Streamer) error {
-	fmt.Println(
-		"date, price, " +
-			"transaction amount, transaction value, transaction fee, " +
-			"asset amount, asset value, " +
-			"cash, total value, " +
-			"ROI, ROI %, " +
-			"num buys, amount bought, value bought, " +
-			"num sells, amount sold, value sold",
-	)
-
+	if bot.PrintTransactions {
+		fmt.Println(
+			"date, price, " +
+				"transaction amount, transaction value, transaction fee, " +
+				"asset amount, asset value, " +
+				"cash, total value, " +
+				"ROI, ROI %, " +
+				"num buys, amount bought, value bought, " +
+				"num sells, amount sold, value sold",
+		)
+	}
 	return s.Stream(func(quote Quote) error {
 		//quote.Print()
 		action, err := bot.Process(quote)
 		if err != nil {
+			if errors.Is(err, InsufficientBudget) {
+				return nil
+			}
 			return err
 		}
-		if action != nil {
-
+		if bot.PrintTransactions && action != nil {
 			fmt.Printf("%s, %f, %.2f, %f, %f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %d, %.2f, %.2f, %d, %.2f, %.2f\n",
 				quote.Time().UTC(), quote.Price().AsMajorUnits(),
 				action.Amount, action.Value.AsMajorUnits(), action.Fee.AsMajorUnits(),
@@ -161,7 +171,7 @@ func (bot DCA) Print() {
 	fmt.Printf("Bought Amount: %s\n", bot.BoughtAmount.Display())
 	fmt.Println("")
 
-	fmt.Printf("%s amount:%.2f\n", bot.Symbol, bot.AssetAmount)
+	fmt.Printf("%s amount:%.2f\n", bot.Target.Code, bot.AssetAmount)
 	if bot.LastActedQuote != nil {
 		fmt.Printf("Asset Value: %s\n", bot.AssetValue((*bot.LastActedQuote).Price()).Display())
 		fmt.Printf("Cash: %s\n", bot.Cash.Display())
@@ -199,7 +209,8 @@ func (bot DCA) LastTransactionTime() time.Time {
 
 func (bot DCA) AssetValue(price *money.Money) *money.Money {
 	v := price.AsMajorUnits() * bot.AssetAmount
-	return money.New(int64(v*100), bot.Currency)
+	mv := v * math.Pow10(bot.Currency.Fraction)
+	return money.New(int64(mv), bot.Currency.Code)
 }
 
 func (bot DCA) TotalValue(price *money.Money) *money.Money {
@@ -264,8 +275,8 @@ func (bot *DCA) buy(q Quote) (*Transaction, error) {
 	// TODO: propogate any errors
 	if less, _ := bot.BoughtAmount.LessThan(bot.TotalBuyLimit()); !less {
 		log.WithFields(log.Fields{
-			"bought amount":  bot.BoughtAmount.Display(),
-			"total buy limi": bot.TotalBuyLimit().Display(),
+			"bought amount":   bot.BoughtAmount.Display(),
+			"total buy limit": bot.TotalBuyLimit().Display(),
 		}).Warn("refusing to buy as bought exceeds or equals buy limit ")
 		return nil, InsufficientBudget
 	}
@@ -294,7 +305,7 @@ func (bot *DCA) buy(q Quote) (*Transaction, error) {
 }
 
 func (bot *DCA) doBuy(amount float64, value *money.Money) (*Transaction, error) {
-	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": bot.Symbol}).Debug("execute buy")
+	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": bot.Target.Code}).Debug("execute buy")
 	// TODO align this with BNB deduction maker/taker 0.075%/0.075%
 	buckets, _ := value.Allocate(999, 1)
 	fee := buckets[1]
@@ -326,12 +337,12 @@ func (b *DCA) sell(q Quote) (*Transaction, error) {
 }
 
 func (bot *DCA) doSell(amount float64, value *money.Money) (*Transaction, error) {
-	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": bot.Symbol}).Debug("execute sell")
+	log.WithFields(log.Fields{"amount": amount, "value": value.Display(), "symbol": bot.Target.Code}).Debug("execute sell")
 	buckets, _ := value.Allocate(999, 1)
 	fee := buckets[1]
 	value = buckets[0]
 
-	negative, err := money.New(0, bot.Currency).Subtract(value)
+	negative, err := money.New(0, bot.Currency.Code).Subtract(value)
 	return &Transaction{Amount: 0 - amount, Value: negative, Time: time.Now(), Fee: fee}, err
 }
 

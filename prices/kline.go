@@ -3,6 +3,7 @@ package prices
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -10,7 +11,9 @@ import (
 )
 
 type Kline struct {
-	symbol    string
+	Src *money.Currency
+	Dst *money.Currency
+
 	Open      *money.Money
 	High      *money.Money
 	Low       *money.Money
@@ -19,12 +22,12 @@ type Kline struct {
 	CloseTime time.Time
 }
 
-func NewKline(symbol string) *Kline {
-	return &Kline{symbol: symbol}
+func NewKline(src, dst *money.Currency) *Kline {
+	return &Kline{Src: src, Dst: dst}
 }
 
 func (q Kline) Symbol() string {
-	return q.symbol
+	return fmt.Sprintf("%s%s", q.Src.Code, q.Dst.Code)
 }
 
 // Price is the average price during the time window
@@ -62,22 +65,23 @@ func (q *Kline) FromBinance(data []interface{}) error {
 	if len(data) != 12 {
 		return BinanceDataFormatError
 	}
-	q.Open, _ = q.MoneyFor(data[1].(string), "USD")
-	q.High, _ = q.MoneyFor(data[2].(string), "USD")
-	q.Low, _ = q.MoneyFor(data[3].(string), "USD")
-	q.Close, _ = q.MoneyFor(data[4].(string), "USD")
+	q.Open, _ = q.MoneyFor(data[1].(string), q.Dst)
+	q.High, _ = q.MoneyFor(data[2].(string), q.Dst)
+	q.Low, _ = q.MoneyFor(data[3].(string), q.Dst)
+	q.Close, _ = q.MoneyFor(data[4].(string), q.Dst)
 	q.OpenTime = time.Unix(int64((data[0].(float64))/1000), 0)
 	q.CloseTime = time.Unix(int64((data[6].(float64))/1000), 0)
 
 	return nil
 }
 
-func (q Kline) MoneyFor(s, currency string) (*money.Money, error) {
+func (q Kline) MoneyFor(s string, currency *money.Currency) (*money.Money, error) {
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return nil, err
 	}
-	return money.New(int64(v*100), currency), nil
+	mv := v * math.Pow10(currency.Fraction)
+	return money.New(int64(mv), currency.Code), nil
 }
 
 func (q Kline) Print() {
